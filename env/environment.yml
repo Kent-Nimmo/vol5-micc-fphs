@@ -1,0 +1,10 @@
+name: micc-fphs
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - pyyaml

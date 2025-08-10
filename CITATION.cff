@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: Please cite this work if you find it useful.
+title: Measurement‑Induced Context Collapse (MICC) on FPHS
+authors:
+  - family-names: Nimmo
+    given-names: Kent
+    orcid: 0000-0000-0000-0000
+date-released: 2025-08-09
+version: v1.0.0
+doi: 10.0000/micc.fphs

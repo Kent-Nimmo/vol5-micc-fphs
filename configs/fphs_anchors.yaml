@@ -1,0 +1,25 @@
+# Parameter anchors for the MICC simulation
+
+lattice_sizes: [8, 12]
+inverse_couplings: [3.0, 3.5]
+pivot_slopes: [0.75, 1.0]  # κ values
+gauge_groups: [SU2, SU3]
+
+# Measurement strengths (readout fractions)
+f_grid:
+  during: [0.0, 0.05, 0.10, 0.20, 0.30, 0.50]
+  pre: [0.0, 0.30]
+  post: [0.0, 0.30]
+
+# Number of Monte‑Carlo seeds per condition
+seeds: [0, 1, 2, 3, 4]
+
+# Spectral‑kernel settings
+# Location of the fractal dimension table used to build the spectral‑kernel eigenvalues.
+# This file is packaged in ``data`` and derived from the Volume 3 diagnostics.
+D_values_path: "data/D_values.csv"
+
+# Pivot parameters (defaults; can be overridden per run if needed)
+pivot:
+  logistic_n0: 0.0  # centre fixed at n=0 → D(n0)=2
+  a: 1.0           # linear coefficient in g(D)=aD+b

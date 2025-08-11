@@ -1,5 +1,12 @@
-numpy
-scipy
-pandas
-matplotlib
-pyyaml
+# Core scientific stack
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.2.2
+matplotlib==3.8.4
+PyYAML==6.0.1
+
+# Parquet writer used by scripts/aggregate.py
+pyarrow==15.0.2
+
+# Optional quality-of-life
+tqdm==4.66.4

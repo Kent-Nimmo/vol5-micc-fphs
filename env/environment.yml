@@ -1,10 +1,18 @@
-name: micc-fphs
+name: fphs
 channels:
+  - conda-forge
   - defaults
 dependencies:
+  # Core
   - python=3.10
-  - numpy
-  - scipy
-  - pandas
-  - matplotlib
-  - pyyaml
+  - numpy=1.26.4
+  - scipy=1.11.4
+  - pandas=2.2.2
+  - matplotlib=3.8.4
+  - pyyaml=6.0.1
+  - pyarrow=15.0.2            # for Parquet in aggregate.py
+  - pip
+
+  # (Optional) nice-to-haves installed via pip below
+  - pip:
+      - tqdm==4.66.4

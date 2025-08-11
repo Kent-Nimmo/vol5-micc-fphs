@@ -1,124 +1,237 @@
-"""Statistical analysis utilities for MICC outputs.
+"""Statistical analysis utilities for MICC outputs (expanded).
 
-This module contains routines to perform simple monotonicity tests and
-to fit exponential decay models to visibility data.  These helpers
-return dictionaries summarising the fitted parameters and whether
-observed trends meet the expected sign criteria.
+What’s new:
+- Weighted exponential fit for V(f) on log-scale with R^2.
+- Bootstrap CI for alpha (resampling across seeds).
+- Weighted slope + 95% CI for sigma(f) (and any y vs f).
+- Spearman monotonicity test (rank-based, robust to mild nonlinearity).
+
+Notes:
+- For exp fits: we model ln V = ln V0 - alpha * f.
+- Weights for ln V come from error propagation: var(ln V) ≈ (σV / V)^2.
 """
 
 from __future__ import annotations
-
+from typing import Iterable, Optional, Dict, Tuple, List
 import numpy as np
-from typing import Dict, Iterable, Tuple
+import math
 
+
+# ---------- Small helpers ----------
+
+def _as_float_array(x: Iterable[float]) -> np.ndarray:
+    return np.asarray(list(x), dtype=float)
+
+
+def _r2_score(y: np.ndarray, yhat: np.ndarray, w: Optional[np.ndarray] = None) -> float:
+    if w is None:
+        sst = float(np.sum((y - y.mean())**2))
+        sse = float(np.sum((y - yhat)**2))
+    else:
+        w = np.asarray(w, dtype=float)
+        ybar = float((w * y).sum() / max(w.sum(), 1e-15))
+        sst = float((w * (y - ybar)**2).sum())
+        sse = float((w * (y - yhat)**2).sum())
+    return float(1.0 - sse / max(sst, 1e-15))
+
+
+def _weighted_fit(X: np.ndarray, y: np.ndarray, w: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (beta, cov_beta) for y ~ X beta using optional diagonal weights."""
+    if w is None:
+        XtX = X.T @ X
+        Xty = X.T @ y
+        beta = np.linalg.solve(XtX, Xty)
+        # homoscedastic OLS covariance proxy
+        resid = y - X @ beta
+        dof = max(len(y) - X.shape[1], 1)
+        s2 = float((resid @ resid) / dof)
+        cov = s2 * np.linalg.pinv(XtX)
+        return beta, cov
+    W = np.diag(np.asarray(w, dtype=float))
+    XtWX = X.T @ W @ X
+    XtWy = X.T @ W @ y
+    beta = np.linalg.solve(XtWX, XtWy)
+    cov = np.linalg.pinv(XtWX)
+    return beta, cov
+
+
+# ---------- Monotonicity & simple fits (kept/back‑compat) ----------
 
 def test_monotonicity(f_values: Iterable[float], y_values: Iterable[float], expectation: str) -> Dict[str, float | bool]:
-    """Test whether a sequence y(f) is monotonic in f.
-
-    A linear regression is performed on the pairs ``(f, y)``.  The
-    slope and its standard error are estimated via ordinary least
-    squares.  The result includes a boolean flag ``is_monotonic`` that
-    is True if the slope has the expected sign with 95% confidence.
-
-    Parameters
-    ----------
-    f_values : iterable of float
-        Measurement strengths (independent variable).
-    y_values : iterable of float
-        Observables corresponding to ``f_values``.
-    expectation : {'increase', 'decrease'}
-        Expected monotonic trend; determines the sign of the slope.
-
-    Returns
-    -------
-    dict
-        Contains the fitted slope, intercept, slope standard error,
-        95% confidence interval half‑width, and a boolean ``is_monotonic``.
-    """
-    f = np.asarray(list(f_values), dtype=float)
-    y = np.asarray(list(y_values), dtype=float)
-    # Perform linear regression y = a + b f
+    f = _as_float_array(f_values); y = _as_float_array(y_values)
     X = np.column_stack([np.ones_like(f), f])
-    beta, residuals, rank, s = np.linalg.lstsq(X, y, rcond=None)
+    beta, cov = _weighted_fit(X, y, None)
     intercept, slope = beta
-    # Degrees of freedom
-    n = len(f)
-    dof = n - 2
-    if dof > 0 and residuals.size > 0:
-        s_err = np.sqrt(residuals[0] / dof)
-        cov = s_err ** 2 * np.linalg.inv(X.T @ X)
-        slope_err = np.sqrt(cov[1, 1])
-    else:
-        # Not enough points to estimate error
-        slope_err = np.nan
-    # 95% CI half width (approx using z=1.96)
-    half_width = 1.96 * slope_err if not np.isnan(slope_err) else np.nan
-    # Check monotonicity
+    slope_err = float(np.sqrt(max(cov[1, 1], 0.0)))
+    z = 1.96
     if expectation == 'increase':
-        is_monotonic = (slope - half_width) > 0
+        is_monotonic = (slope - z * slope_err) > 0
     elif expectation == 'decrease':
-        is_monotonic = (slope + half_width) < 0
+        is_monotonic = (slope + z * slope_err) < 0
     else:
         raise ValueError("expectation must be 'increase' or 'decrease'")
     return {
         'slope': float(slope),
         'intercept': float(intercept),
-        'slope_err': float(slope_err) if not np.isnan(slope_err) else float('nan'),
-        'ci_half_width': float(half_width) if not np.isnan(half_width) else float('nan'),
+        'slope_err': slope_err,
+        'ci_half_width': float(z * slope_err),
         'is_monotonic': bool(is_monotonic),
     }
 
 
 def fit_exponential_decay(f_values: Iterable[float], V_values: Iterable[float]) -> Dict[str, float]:
-    """Fit an exponential decay model V(f) ≈ V0 * exp(-α f).
+    f = _as_float_array(f_values); V = _as_float_array(V_values)
+    mask = V > 0
+    f = f[mask]; V = V[mask]
+    logV = np.log(V)
+    X = np.column_stack([np.ones_like(f), f])
+    beta, cov = _weighted_fit(X, logV, None)
+    intercept, slope = beta
+    alpha = -slope
+    alpha_err = float(np.sqrt(max(cov[1, 1], 0.0)))
+    V0 = float(np.exp(intercept))
+    V0_err = float(np.exp(intercept) * np.sqrt(max(cov[0, 0], 0.0)))
+    yhat = X @ beta
+    R2 = _r2_score(logV, yhat, None)
+    return {'alpha': float(alpha), 'alpha_err': alpha_err, 'V0': V0, 'V0_err': V0_err, 'R2': R2}
 
-    Taking the natural logarithm yields ``log(V) = log(V0) - α f``.  We
-    perform linear regression on ``log(V)`` versus ``f`` to estimate
-    ``alpha`` and ``log(V0)``.  Standard errors are computed as in
-    :func:`test_monotonicity` and returned for ``alpha``.
+
+# ---------- New: weighted linear fit & Spearman ----------
+
+def spearman_monotone(f_values: Iterable[float], y_values: Iterable[float], expectation: str) -> Dict[str, float | bool]:
+    f = _as_float_array(f_values); y = _as_float_array(y_values)
+
+    def ranks(a: np.ndarray) -> np.ndarray:
+        order = np.argsort(a, kind='mergesort')
+        r = np.empty_like(order, dtype=float)
+        r[order] = np.arange(1, len(a)+1, dtype=float)
+        _, inv, counts = np.unique(a, return_inverse=True, return_counts=True)
+        sums = np.bincount(inv, r)
+        avg = sums / counts
+        return avg[inv]
+
+    rf, ry = ranks(f), ranks(y)
+    rf0, ry0 = rf - rf.mean(), ry - ry.mean()
+    rho = float((rf0 @ ry0) / math.sqrt((rf0 @ rf0) * (ry0 @ ry0) + 1e-15))
+
+    # exact permutation p-value for small n
+    n = len(f)
+    p_value = float('nan')
+    if n <= 8:
+        from itertools import permutations
+        cnt = 0; ge = 0
+        for perm in permutations(range(n)):
+            ry_p = ry[list(perm)]
+            ry0p = ry_p - ry_p.mean()
+            rho_p = (rf0 @ ry0p) / math.sqrt((rf0 @ rf0) * (ry0p @ ry0p) + 1e-15)
+            cnt += 1
+            if abs(rho_p) >= abs(rho) - 1e-15:
+                ge += 1
+        p_value = ge / cnt
+
+    ok = rho > 0 if expectation == 'increase' else rho < 0
+    return {'rho': rho, 'p_value': p_value, 'is_monotonic': bool(ok)}
+
+
+def weighted_linear_fit(
+    f_values: Iterable[float],
+    y_values: Iterable[float],
+    y_errors: Optional[Iterable[float]] = None,
+    z: float = 1.96,
+) -> Dict[str, float | bool]:
+    f = _as_float_array(f_values); y = _as_float_array(y_values)
+    w = None
+    if y_errors is not None:
+        yerr = _as_float_array(y_errors)
+        w = 1.0 / np.maximum(yerr**2, 1e-15)
+    X = np.column_stack([np.ones_like(f), f])
+    beta, cov = _weighted_fit(X, y, w)
+    intercept, slope = beta
+    slope_err = float(np.sqrt(max(cov[1, 1], 0.0)))
+    return {'slope': float(slope), 'intercept': float(intercept), 'slope_err': slope_err, 'ci_half_width': float(z * slope_err)}
+
+
+# ---------- New: weighted exponential fit with errors & bootstrap alpha ----------
+
+def exp_fit_weighted(
+    f_values: Iterable[float],
+    V_values: Iterable[float],
+    V_errors: Optional[Iterable[float]] = None,
+) -> Dict[str, float]:
+    """Weighted fit of ln V = ln V0 - alpha f with propagated weights and R^2."""
+    f = _as_float_array(f_values); V = _as_float_array(V_values)
+    mask = V > 0
+    f = f[mask]; V = V[mask]
+    if V_errors is not None:
+        Verr = _as_float_array(V_errors)[mask]
+        Verr = np.maximum(Verr, 1e-12)
+        w = 1.0 / np.maximum((Verr / V)**2, 1e-12)   # weights for ln V
+    else:
+        w = None
+    logV = np.log(V)
+    X = np.column_stack([np.ones_like(f), f])
+    beta, cov = _weighted_fit(X, logV, w)
+    intercept, slope = beta
+    yhat = X @ beta
+    R2 = _r2_score(logV, yhat, w)
+    return {
+        'alpha': float(-slope),
+        'alpha_err': float(np.sqrt(max(cov[1, 1], 0.0))),
+        'V0': float(np.exp(intercept)),
+        'V0_err': float(np.exp(intercept) * np.sqrt(max(cov[0, 0], 0.0))),
+        'R2': R2,
+    }
+
+
+def bootstrap_alpha_from_seeds(
+    f_values: Iterable[float],
+    V_by_seed: List[Iterable[float]],
+    V_err_by_seed: Optional[List[Iterable[float]]] = None,
+    n_boot: int = 500,
+    rng: Optional[np.random.Generator] = None,
+) -> Dict[str, float]:
+    """
+    Bootstrap alpha CI by resampling seeds with replacement.
 
     Parameters
     ----------
-    f_values : iterable of float
-        Measurement strengths.
-    V_values : iterable of float
-        Visibility values (must be positive).
+    f_values : array-like of f grid (shared across seeds)
+    V_by_seed : list of sequences, each is V(f) for one seed
+    V_err_by_seed : optional list of V_err(f) sequences per seed (same shapes)
+    n_boot : number of bootstrap resamples
 
-    Returns
-    -------
-    dict
-        Contains ``alpha``, ``alpha_err``, ``V0``, and ``V0_err`` (log
-        transformed errors are propagated to the amplitude domain).
+    Returns keys: alpha, alpha_lo, alpha_hi (95% CI), R2 (from full pooled fit)
     """
-    f = np.asarray(list(f_values), dtype=float)
-    V = np.asarray(list(V_values), dtype=float)
-    # Filter out non‑positive values to avoid log issues
-    mask = V > 0
-    f = f[mask]
-    V = V[mask]
-    logV = np.log(V)
-    X = np.column_stack([np.ones_like(f), f])
-    beta, residuals, rank, s = np.linalg.lstsq(X, logV, rcond=None)
-    intercept, slope = beta
-    alpha = -slope
-    logV0 = intercept
-    # Errors
-    n = len(f)
-    dof = n - 2
-    if dof > 0 and residuals.size > 0:
-        s_err = np.sqrt(residuals[0] / dof)
-        cov = s_err ** 2 * np.linalg.inv(X.T @ X)
-        slope_err = np.sqrt(cov[1, 1])
-        intercept_err = np.sqrt(cov[0, 0])
+    rng = np.random.default_rng() if rng is None else rng
+    f = _as_float_array(f_values)
+    Vs = [ _as_float_array(v) for v in V_by_seed ]
+    if V_err_by_seed is not None:
+        VEs = [ _as_float_array(e) for e in V_err_by_seed ]
     else:
-        slope_err = np.nan
-        intercept_err = np.nan
-    alpha_err = float(slope_err) if not np.isnan(slope_err) else float('nan')
-    V0 = float(np.exp(logV0))
-    V0_err = float(np.exp(logV0) * intercept_err) if not np.isnan(intercept_err) else float('nan')
+        VEs = None
+
+    # Full pooled (across seeds) mean & SEM → reference fit & R2
+    V_mat = np.vstack(Vs)              # [n_seeds, n_f]
+    V_mean = V_mat.mean(axis=0)
+    V_sem  = V_mat.std(axis=0, ddof=1) / max(V_mat.shape[0]**0.5, 1.0)
+    ref = exp_fit_weighted(f, V_mean, V_sem)
+
+    # Bootstrap over seeds
+    n_seeds = V_mat.shape[0]
+    alphas = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n_seeds, size=n_seeds)  # resample seeds
+        Vb = V_mat[idx].mean(axis=0)
+        Vb_sem = V_mat[idx].std(axis=0, ddof=1) / max(n_seeds**0.5, 1.0)
+        fitb = exp_fit_weighted(f, Vb, Vb_sem)
+        alphas.append(fitb['alpha'])
+    alphas = np.asarray(alphas, dtype=float)
+    lo, hi = np.quantile(alphas, [0.025, 0.975])
+
     return {
-        'alpha': float(alpha),
-        'alpha_err': float(alpha_err),
-        'V0': V0,
-        'V0_err': V0_err,
+        'alpha': float(ref['alpha']),
+        'alpha_lo': float(lo),
+        'alpha_hi': float(hi),
+        'R2': float(ref['R2']),
+        'V0': float(ref['V0']),
     }

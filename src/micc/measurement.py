@@ -1,31 +1,28 @@
-"""Measurement channel for MICC.
+# measurement.py  —  patched
+"""
+Measurement channel for MICC.
 
-This module defines functions to inject controlled dephasing (partial
-measurements) into gauge link variables.  The measurement model
-implemented here corresponds to a gauge‑covariant dephasing channel
-acting independently on a randomly chosen fraction ``f`` of links.  For
-each selected link ``U_i`` belonging to a gauge group ``G`` the
-procedure samples a Lie‑algebra kick ``δ`` from a zero‑mean Gaussian
-with variance ``f`` and updates the link via
-
-.. math::
-
-   U_i \leftarrow \exp(\mathrm{i}\,δ A)\,U_i,
-
-where ``A`` is a fixed diagonal generator of the Lie algebra.
-
-Because the generators used here are diagonal the exponentiation
-reduces to multiplying diagonal elements by complex phase factors.
-
-The function ``apply_dephasing`` returns a new array of link matrices
-with the noise applied and reports how many links were measured.
+Gauge‑covariant dephasing acting on a random fraction f of links:
+for each selected link U_i, sample a real kick δ ~ N(0, f) and update
+U_i ← exp(i δ A) U_i, with A a fixed diagonal generator (per group).
 """
 
 from __future__ import annotations
 
-from typing import Tuple
-
+from typing import Tuple, Optional
 import numpy as np
+
+
+def _diag_generator(group_upper: str) -> np.ndarray:
+    """Return a diagonal generator for the given gauge group."""
+    if group_upper == 'SU2':
+        # σ_z/2
+        return np.array([0.5, -0.5], dtype=float)
+    elif group_upper == 'SU3':
+        # λ3‑like diag([1,-1,0]); simple, traceless, diagonal
+        return np.array([1.0, -1.0, 0.0], dtype=float)
+    else:
+        raise ValueError(f"Unsupported group: {group_upper}")
 
 
 def apply_dephasing(U: np.ndarray, f: float, group: str, rng: np.random.Generator) -> Tuple[np.ndarray, int]:
@@ -33,55 +30,69 @@ def apply_dephasing(U: np.ndarray, f: float, group: str, rng: np.random.Generato
 
     Parameters
     ----------
-    U : ndarray
-        Array of gauge link matrices of shape ``(num_links, N, N)``.
-        These matrices are assumed to be diagonal (but the function
-        works for arbitrary unitary matrices by performing matrix
-        multiplication on the left).
-    f : float
-        Fraction of links to which dephasing noise is applied.  Must
-        satisfy ``0 ≤ f ≤ 1``.
-    group : str
-        Gauge group name, one of ``'SU2'`` or ``'SU3'``.  Determines
-        which diagonal generator is used.
+    U : (num_links, N, N) complex array
+        Gauge links.
+    f : float in [0,1]
+        Fraction of links to dephase (rounded to nearest integer count).
+    group : 'SU2' | 'SU3'
     rng : numpy.random.Generator
-        Random number generator for selecting measured links and
-        sampling noise amplitudes.
 
     Returns
     -------
-    (U_new, measured_count) : tuple
-        A tuple containing the updated link array and the number of
-        links that were dephased.
+    (U_new, measured_count)
     """
     num_links, N, _ = U.shape
     f = float(f)
-    if f < 0.0 or f > 1.0:
+    if not (0.0 <= f <= 1.0):
         raise ValueError("f must be between 0 and 1")
-    # Determine number of measured links (round to nearest integer)
+
     measured_count = int(round(f * num_links))
-    # Copy U to avoid modifying original
-    U_new = U.copy()
-    if measured_count == 0:
-        return U_new, 0
-    # Sample indices without replacement
+    if measured_count <= 0:
+        return U.copy(), 0
+
     indices = rng.choice(num_links, size=measured_count, replace=False)
-    # Choose diagonal generator according to group
-    group_upper = group.upper()
-    if group_upper == 'SU2':
-        # σ_z/2 generator diagonal entries
-        diag_gen = np.array([0.5, -0.5], dtype=float)
-    elif group_upper == 'SU3':
-        # λ3-like generator diag([1, -1, 0])
-        diag_gen = np.array([1.0, -1.0, 0.0], dtype=float)
-    else:
-        raise ValueError(f"Unsupported group: {group}")
-    # For each selected link apply noise
+    diag_gen = _diag_generator(group.upper())
+
+    U_new = U.copy()
+    # Var(δ) = f per cycle per link (scalar kick along chosen diagonal generator)
     for idx in indices:
-        # Sample a real kick δ from N(0, f)
         delta = rng.normal(loc=0.0, scale=np.sqrt(f))
         phases = np.exp(1j * delta * diag_gen)
         phase_mat = np.diag(phases)
-        # Left‑multiply the link: U_i ← exp(i δ A) U_i
         U_new[idx] = phase_mat @ U_new[idx]
+
     return U_new, measured_count
+
+
+def apply_dephasing_with_indices(
+    U: np.ndarray,
+    f: float,
+    group: str,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, int, np.ndarray, float]:
+    """Like apply_dephasing, but also returns measured indices and hit fraction.
+
+    Returns
+    -------
+    (U_new, measured_count, indices, hit_fraction)
+    """
+    num_links, N, _ = U.shape
+    f = float(f)
+    if not (0.0 <= f <= 1.0):
+        raise ValueError("f must be between 0 and 1")
+
+    measured_count = int(round(f * num_links))
+    indices = np.empty(0, dtype=int)
+    if measured_count > 0:
+        indices = rng.choice(num_links, size=measured_count, replace=False)
+    diag_gen = _diag_generator(group.upper())
+
+    U_new = U.copy()
+    for idx in indices:
+        delta = rng.normal(loc=0.0, scale=np.sqrt(f))
+        phases = np.exp(1j * delta * diag_gen)
+        phase_mat = np.diag(phases)
+        U_new[idx] = phase_mat @ U_new[idx]
+
+    hit_fraction = float(measured_count) / float(num_links if num_links > 0 else 1)
+    return U_new, measured_count, indices, hit_fraction

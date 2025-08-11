@@ -21,21 +21,21 @@ pivot:
 # ---- Measurement (HYBRID) ----
 measurement:
   selection: "uniform"
-  kick_passes: 3          # amplify the dephasing per snapshot/cycle
+  kick_passes: 3          # compound the dephasing per snapshot/cycle
 
 # ---- Visibility ----
 visibility:
   num_phi: 64
-  cycles: 8
+  cycles: 16              # ↑ more averaging → better pooled R²
   eps: 1.0e-12
-  eps_scale: 1.0e-6
+  eps_scale: 3.0e-6       # ↑ slightly stronger guard for tiny I0
 
 # ---- Wilson loops / Creutz ----
 loops:
-  creutz_sizes: [[2, 2]]
+  creutz_sizes: [[2, 2], [3, 3]]   # use both windows; averaged robustly
   block_size: 64
   min_valid_fraction: 0.95
-  measurement_cycles: 4   # average σ & P over measured snapshots when schedule='during'
+  measurement_cycles: 6            # ↑ more σ/P averaging on measured snapshots
 
 # ---- Analysis ----
 analysis:
